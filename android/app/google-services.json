@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "65182351227",
+    "firebase_url": "https://na-rota-b4fe9-default-rtdb.firebaseio.com",
+    "project_id": "na-rota-b4fe9",
+    "storage_bucket": "na-rota-b4fe9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:65182351227:android:7eb65a17c0fb4c3e5dc7de",
+        "android_client_info": {
+          "package_name": "com.example.navifake"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDrpqvQwtjLLlup0LADjDZtjbZyodbAyKc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
