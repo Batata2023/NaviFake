@@ -51,6 +51,13 @@ class _MapaScreenState extends State<MapaScreen> {
   bool _solicitandoLocalizacao = false;
   bool _erroPermissaoLocalizacao = false;
 
+  // --- Autocomplete de endereços ---
+  List<Map<String, dynamic>> _sugestoes = [];
+  Timer? _debounce;
+
+  // --- Tema noturno ---
+  bool _temaNoturno = false;
+
   @override
   void initState() {
     super.initState();
@@ -111,7 +118,6 @@ class _MapaScreenState extends State<MapaScreen> {
 
       setState(() {
         _minhaLocalizacao = novaPosicao;
-        // Só atualiza a direção se o GPS retornar um heading válido
         if (posicao.heading >= 0) {
           _direcaoAtual = posicao.heading;
         }
@@ -122,8 +128,6 @@ class _MapaScreenState extends State<MapaScreen> {
         _primeiraLocalizacao = false;
       }
 
-      // Modo navegação: a câmera segue o usuário, verifica desvio de rota
-      // e checa se está próximo da próxima instrução de voz
       if (_modoNavegacao) {
         _mapController.move(novaPosicao, _mapController.camera.zoom);
         _verificarDesvioDaRota(novaPosicao);
@@ -132,13 +136,11 @@ class _MapaScreenState extends State<MapaScreen> {
     });
   }
 
-  // Verifica se o texto digitado parece ser um CEP
   bool _pareceCep(String texto) {
     final regexCep = RegExp(r'^\d{5}-?\d{3}$');
     return regexCep.hasMatch(texto.trim());
   }
 
-  // Busca o endereço completo a partir do CEP usando ViaCEP
   Future<String?> _buscarEnderecoPorCep(String cep) async {
     final cepLimpo = cep.replaceAll('-', '').trim();
 
@@ -162,7 +164,69 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Busca o endereço (ou CEP) e transforma em coordenadas
+  // Dispara a busca de sugestões com debounce (600ms) para não sobrecarregar
+  // o limite de 1 requisição/segundo do Nominatim.
+  void _onBuscaChanged(String texto) {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+
+    if (texto.trim().isEmpty) {
+      setState(() => _sugestoes = []);
+      return;
+    }
+
+    _debounce = Timer(const Duration(milliseconds: 600), () async {
+      final resultados = await _buscarSugestoes(texto);
+      if (mounted) setState(() => _sugestoes = resultados);
+    });
+  }
+
+  // Consulta o Nominatim e retorna até 5 sugestões de endereço
+  Future<List<Map<String, dynamic>>> _buscarSugestoes(String texto) async {
+    try {
+      final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/search'
+        '?q=${Uri.encodeComponent(texto)}&format=json&addressdetails=1&limit=5',
+      );
+
+      final resposta = await http.get(
+        url,
+        headers: {'User-Agent': 'NaviFake-App-Pessoal'},
+      );
+
+      if (resposta.statusCode == 200) {
+        final List dados = json.decode(resposta.body);
+        return dados.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Quando o usuário toca em uma sugestão da lista
+  Future<void> _selecionarSugestao(Map<String, dynamic> sugestao) async {
+    if (_minhaLocalizacao == null) {
+      _mostrarErro('Ative sua localização antes de buscar um destino.');
+      return;
+    }
+
+    final lat = double.parse(sugestao['lat']);
+    final lon = double.parse(sugestao['lon']);
+    final destinoEncontrado = LatLng(lat, lon);
+
+    _buscaController.text = sugestao['display_name'] ?? '';
+
+    setState(() {
+      _destino = destinoEncontrado;
+      _sugestoes = [];
+    });
+
+    FocusScope.of(context).unfocus();
+    await _tracarRota(_minhaLocalizacao!, destinoEncontrado);
+  }
+
+  // Busca o endereço (ou CEP) e transforma em coordenadas (usado ao apertar
+  // Enter ou o ícone de busca, sem passar pela lista de sugestões)
   Future<void> _buscarEndereco(String textoDigitado) async {
     if (textoDigitado.trim().isEmpty) return;
 
@@ -171,7 +235,10 @@ class _MapaScreenState extends State<MapaScreen> {
       return;
     }
 
-    setState(() => _buscando = true);
+    setState(() {
+      _buscando = true;
+      _sugestoes = [];
+    });
 
     String enderecoParaBuscar = textoDigitado;
 
@@ -221,9 +288,6 @@ class _MapaScreenState extends State<MapaScreen> {
     setState(() => _buscando = false);
   }
 
-  // Traça a rota entre origem e destino usando OSRM, incluindo os "steps"
-  // (manobras) para gerar as instruções de voz turn-by-turn, além do
-  // tempo e distância estimados da viagem.
   Future<void> _tracarRota(LatLng origem, LatLng destino) async {
     try {
       final url = Uri.parse(
@@ -250,14 +314,13 @@ class _MapaScreenState extends State<MapaScreen> {
       final pontos =
           coordenadas.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
 
-      // Monta a lista de instruções a partir dos "steps" de todas as "legs"
       final List<InstrucaoNavegacao> novasInstrucoes = [];
       for (final leg in rota['legs']) {
         for (final step in leg['steps']) {
           final maneuver = step['maneuver'];
           final tipo = maneuver['type'];
           final modificador = maneuver['modifier'];
-          final coordManobra = maneuver['location']; // [lon, lat]
+          final coordManobra = maneuver['location'];
 
           novasInstrucoes.add(
             InstrucaoNavegacao(
@@ -277,8 +340,6 @@ class _MapaScreenState extends State<MapaScreen> {
         _distanciaMetros = distancia;
       });
 
-      // Só enquadra origem+destino se NÃO estivermos navegando
-      // (durante a navegação a câmera já está seguindo o usuário)
       if (!_modoNavegacao) {
         _mapController.fitCamera(
           CameraFit.coordinates(
@@ -292,11 +353,9 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Verifica se o usuário se desviou da rota traçada e recalcula se necessário
   Future<void> _verificarDesvioDaRota(LatLng posicaoAtual) async {
     if (_pontosRota.isEmpty || _destino == null) return;
 
-    // Evita recalcular com muita frequência (mínimo 5 segundos entre recálculos)
     final agora = DateTime.now();
     if (_ultimoRecalculo != null &&
         agora.difference(_ultimoRecalculo!) < const Duration(seconds: 5)) {
@@ -311,15 +370,12 @@ class _MapaScreenState extends State<MapaScreen> {
       if (d < menorDistancia) menorDistancia = d;
     }
 
-    // Se o usuário está a mais de 40 metros da rota, recalcula
     if (menorDistancia > 40) {
       _ultimoRecalculo = agora;
       await _tracarRota(posicaoAtual, _destino!);
     }
   }
 
-  // Verifica se o usuário está perto da próxima manobra e, se estiver,
-  // dispara a instrução de voz correspondente (uma única vez por manobra).
   void _verificarProximaInstrucao(LatLng posicaoAtual) {
     if (_instrucoes.isEmpty || _indiceInstrucaoAtual >= _instrucoes.length) {
       return;
@@ -329,13 +385,11 @@ class _MapaScreenState extends State<MapaScreen> {
     const distancia = Distance();
     final distanciaAteManobra = distancia(posicaoAtual, instrucaoAtual.ponto);
 
-    // Quando estiver a menos de 150m da manobra e ainda não avisou, fala
     if (distanciaAteManobra < 150 && !instrucaoAtual.jaFalada) {
       instrucaoAtual.jaFalada = true;
       _tts.speak(instrucaoAtual.texto);
     }
 
-    // Quando estiver muito próximo (chegou na manobra), avança pra próxima
     if (distanciaAteManobra < 20) {
       _indiceInstrucaoAtual++;
     }
@@ -347,7 +401,6 @@ class _MapaScreenState extends State<MapaScreen> {
     );
   }
 
-  // Formata segundos em texto legível: "12 min" ou "1h 5min"
   String _formatarDuracao(double segundos) {
     final minutos = (segundos / 60).round();
     if (minutos < 60) return '$minutos min';
@@ -356,13 +409,11 @@ class _MapaScreenState extends State<MapaScreen> {
     return '${horas}h ${minutosRestantes}min';
   }
 
-  // Formata metros em texto legível: "5.3 km"
   String _formatarDistancia(double metros) {
     final km = metros / 1000;
     return '${km.toStringAsFixed(1)} km';
   }
 
-  // Retorna o ícone correspondente a cada tipo de alerta
   IconData _iconePorTipo(String tipo) {
     switch (tipo) {
       case 'radar_fixo':
@@ -385,7 +436,6 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Salva um novo alerta na posição atual do usuário
   void _reportarAlerta(String tipo) {
     if (_minhaLocalizacao == null) return;
 
@@ -400,7 +450,6 @@ class _MapaScreenState extends State<MapaScreen> {
     Navigator.pop(context);
   }
 
-  // Abre o menu (bottom sheet) para escolher o tipo de alerta a reportar
   void _abrirMenuReportar() {
     showModalBottomSheet(
       context: context,
@@ -419,7 +468,6 @@ class _MapaScreenState extends State<MapaScreen> {
     );
   }
 
-  // Ativa/desativa o modo de navegação (câmera seguindo o usuário)
   void _alternarModoNavegacao() {
     setState(() {
       _modoNavegacao = !_modoNavegacao;
@@ -430,14 +478,12 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Recentraliza o mapa na posição atual do usuário
   void _recentrarNaMinhaLocalizacao() {
     if (_minhaLocalizacao != null) {
       _mapController.move(_minhaLocalizacao!, 17);
     }
   }
 
-  // Aumenta o zoom em 1 nível
   void _aumentarZoom() {
     _mapController.move(
       _mapController.camera.center,
@@ -445,7 +491,6 @@ class _MapaScreenState extends State<MapaScreen> {
     );
   }
 
-  // Diminui o zoom em 1 nível
   void _diminuirZoom() {
     _mapController.move(
       _mapController.camera.center,
@@ -453,255 +498,323 @@ class _MapaScreenState extends State<MapaScreen> {
     );
   }
 
+  // Alterna entre tema claro e tema noturno (tiles + cores da UI)
+  void _alternarTema() {
+    setState(() {
+      _temaNoturno = !_temaNoturno;
+    });
+  }
+
   @override
   void dispose() {
     _streamPosicao?.cancel();
     _buscaController.dispose();
+    _debounce?.cancel();
     _tts.stop();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('NaviFake')),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FloatingActionButton(
-            heroTag: 'navegar',
-            onPressed: _alternarModoNavegacao,
-            backgroundColor: _modoNavegacao ? Colors.green : Colors.grey,
-            child: Icon(
-              _modoNavegacao ? Icons.navigation : Icons.navigation_outlined,
+    // URL do tile: OpenStreetMap padrão (dia) ou CartoDB Dark Matter (noite)
+    final tileUrl = _temaNoturno
+        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+    final corFundoCard = _temaNoturno ? const Color(0xFF1E1E1E) : Colors.white;
+    final corTextoCard = _temaNoturno ? Colors.white : Colors.black87;
+
+    return Theme(
+      data: _temaNoturno ? ThemeData.dark() : ThemeData.light(),
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('NaviFake'),
+          actions: [
+            IconButton(
+              icon: Icon(_temaNoturno ? Icons.light_mode : Icons.dark_mode),
+              tooltip: _temaNoturno ? 'Ativar tema claro' : 'Ativar tema noturno',
+              onPressed: _alternarTema,
             ),
-          ),
-          const SizedBox(height: 12),
-          FloatingActionButton(
-            heroTag: 'alerta',
-            onPressed: _abrirMenuReportar,
-            backgroundColor: Colors.orange,
-            child: const Icon(Icons.add_alert),
-          ),
-        ],
-      ),
-      body: StreamBuilder<List<Alerta>>(
-        stream: _alertaService.escutarAlertas(),
-        builder: (context, snapshotAlertas) {
-          final alertas = snapshotAlertas.data ?? [];
-
-          return Stack(
-            children: [
-              FlutterMap(
-                mapController: _mapController,
-                options: const MapOptions(
-                  initialCenter: LatLng(-23.5505, -46.6333),
-                  initialZoom: 13,
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.emerson.navifake',
-                  ),
-                  if (_pontosRota.isNotEmpty)
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: _pontosRota,
-                          color: Colors.blueAccent,
-                          strokeWidth: 5,
-                        ),
-                      ],
-                    ),
-                  MarkerLayer(
-                    markers: [
-                      if (_minhaLocalizacao != null)
-                        Marker(
-                          point: _minhaLocalizacao!,
-                          width: 40,
-                          height: 40,
-                          child: Transform.rotate(
-                            // Converte graus (heading do GPS) para radianos
-                            angle: _direcaoAtual * (3.1415926535 / 180),
-                            child: const Icon(
-                              Icons.navigation,
-                              color: Colors.blue,
-                              size: 32,
-                            ),
-                          ),
-                        ),
-                      if (_destino != null)
-                        Marker(
-                          point: _destino!,
-                          width: 40,
-                          height: 40,
-                          child: const Icon(Icons.location_on,
-                              color: Colors.red, size: 40),
-                        ),
-                      ...alertas.map((alerta) {
-                        return Marker(
-                          point: LatLng(alerta.latitude, alerta.longitude),
-                          width: 36,
-                          height: 36,
-                          child: Icon(
-                            _iconePorTipo(alerta.tipo),
-                            color: Colors.deepOrange,
-                            size: 30,
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-                ],
+          ],
+        ),
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingActionButton(
+              heroTag: 'navegar',
+              onPressed: _alternarModoNavegacao,
+              backgroundColor: _modoNavegacao ? Colors.green : Colors.grey,
+              child: Icon(
+                _modoNavegacao ? Icons.navigation : Icons.navigation_outlined,
               ),
+            ),
+            const SizedBox(height: 12),
+            FloatingActionButton(
+              heroTag: 'alerta',
+              onPressed: _abrirMenuReportar,
+              backgroundColor: Colors.orange,
+              child: const Icon(Icons.add_alert),
+            ),
+          ],
+        ),
+        body: StreamBuilder<List<Alerta>>(
+          stream: _alertaService.escutarAlertas(),
+          builder: (context, snapshotAlertas) {
+            final alertas = snapshotAlertas.data ?? [];
 
-              // Overlay: botão para ativar localização manualmente
-              // (necessário para funcionar no Safari/Chrome iOS, que só
-              // libera geolocalização a partir de um toque real do usuário)
-              if (_minhaLocalizacao == null)
-                Positioned.fill(
-                  child: Container(
-                    color: Colors.black45,
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_erroPermissaoLocalizacao)
-                            const Padding(
-                              padding: EdgeInsets.only(bottom: 12),
-                              child: Text(
-                                'Não foi possível obter sua localização.\nVerifique as permissões do navegador.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white),
-                              ),
-                            ),
-                          ElevatedButton.icon(
-                            onPressed: _solicitandoLocalizacao
-                                ? null
-                                : _ativarLocalizacaoManual,
-                            icon: _solicitandoLocalizacao
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.my_location),
-                            label: Text(
-                              _solicitandoLocalizacao
-                                  ? 'Buscando localização...'
-                                  : 'Ativar minha localização',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+            return Stack(
+              children: [
+                FlutterMap(
+                  mapController: _mapController,
+                  options: const MapOptions(
+                    initialCenter: LatLng(-23.5505, -46.6333),
+                    initialZoom: 13,
                   ),
-                ),
-
-              // Barra de busca de endereço/CEP
-              Positioned(
-                top: 10,
-                left: 10,
-                right: 10,
-                child: Material(
-                  elevation: 4,
-                  borderRadius: BorderRadius.circular(8),
-                  child: TextField(
-                    controller: _buscaController,
-                    decoration: InputDecoration(
-                      hintText: 'Digite um endereço ou CEP...',
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 16),
-                      border: InputBorder.none,
-                      suffixIcon: _buscando
-                          ? const Padding(
-                              padding: EdgeInsets.all(12),
-                              child: SizedBox(
-                                width: 20,
-                                height: 20,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                            )
-                          : IconButton(
-                              icon: const Icon(Icons.search),
-                              onPressed: () =>
-                                  _buscarEndereco(_buscaController.text),
-                            ),
-                    ),
-                    onSubmitted: _buscarEndereco,
-                  ),
-                ),
-              ),
-
-              // Card com resumo de tempo e distância da rota atual
-              if (_duracaoSegundos != null && _distanciaMetros != null)
-                Positioned(
-                  top: 70,
-                  left: 10,
-                  right: 10,
-                  child: Material(
-                    elevation: 4,
-                    borderRadius: BorderRadius.circular(8),
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.access_time,
-                              size: 18, color: Colors.blue),
-                          const SizedBox(width: 6),
-                          Text(
-                            _formatarDuracao(_duracaoSegundos!),
-                            style:
-                                const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(width: 16),
-                          const Icon(Icons.route, size: 18, color: Colors.blue),
-                          const SizedBox(width: 6),
-                          Text(_formatarDistancia(_distanciaMetros!)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-              // Controles de zoom e recentralização (canto inferior ESQUERDO)
-              Positioned(
-                left: 10,
-                bottom: 20,
-                child: Column(
                   children: [
-                    FloatingActionButton.small(
-                      heroTag: 'recentrar',
-                      backgroundColor: Colors.white,
-                      onPressed: _recentrarNaMinhaLocalizacao,
-                      child: const Icon(Icons.my_location, color: Colors.blue),
+                    TileLayer(
+                      urlTemplate: tileUrl,
+                      userAgentPackageName: 'com.emerson.navifake',
+                      subdomains: _temaNoturno ? const ['a', 'b', 'c', 'd'] : const ['a', 'b', 'c'],
                     ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'zoomIn',
-                      backgroundColor: Colors.white,
-                      onPressed: _aumentarZoom,
-                      child: const Icon(Icons.add, color: Colors.black87),
-                    ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'zoomOut',
-                      backgroundColor: Colors.white,
-                      onPressed: _diminuirZoom,
-                      child: const Icon(Icons.remove, color: Colors.black87),
+                    if (_pontosRota.isNotEmpty)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _pontosRota,
+                            color: _temaNoturno ? Colors.cyanAccent : Colors.blueAccent,
+                            strokeWidth: 5,
+                          ),
+                        ],
+                      ),
+                    MarkerLayer(
+                      markers: [
+                        if (_minhaLocalizacao != null)
+                          Marker(
+                            point: _minhaLocalizacao!,
+                            width: 40,
+                            height: 40,
+                            child: Transform.rotate(
+                              angle: _direcaoAtual * (3.1415926535 / 180),
+                              child: Icon(
+                                Icons.navigation,
+                                color: _temaNoturno ? Colors.cyanAccent : Colors.blue,
+                                size: 32,
+                              ),
+                            ),
+                          ),
+                        if (_destino != null)
+                          Marker(
+                            point: _destino!,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(Icons.location_on,
+                                color: Colors.red, size: 40),
+                          ),
+                        ...alertas.map((alerta) {
+                          return Marker(
+                            point: LatLng(alerta.latitude, alerta.longitude),
+                            width: 36,
+                            height: 36,
+                            child: Icon(
+                              _iconePorTipo(alerta.tipo),
+                              color: Colors.deepOrange,
+                              size: 30,
+                            ),
+                          );
+                        }),
+                      ],
                     ),
                   ],
                 ),
-              ),
-            ],
-          );
-        },
+
+                if (_minhaLocalizacao == null)
+                  Positioned.fill(
+                    child: Container(
+                      color: Colors.black45,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_erroPermissaoLocalizacao)
+                              const Padding(
+                                padding: EdgeInsets.only(bottom: 12),
+                                child: Text(
+                                  'Não foi possível obter sua localização.\nVerifique as permissões do navegador.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ElevatedButton.icon(
+                              onPressed: _solicitandoLocalizacao
+                                  ? null
+                                  : _ativarLocalizacaoManual,
+                              icon: _solicitandoLocalizacao
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.my_location),
+                              label: Text(
+                                _solicitandoLocalizacao
+                                    ? 'Buscando localização...'
+                                    : 'Ativar minha localização',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Barra de busca + lista de sugestões (autocomplete)
+                Positioned(
+                  top: 10,
+                  left: 10,
+                  right: 10,
+                  child: Column(
+                    children: [
+                      Material(
+                        elevation: 4,
+                        borderRadius: BorderRadius.circular(8),
+                        color: corFundoCard,
+                        child: TextField(
+                          controller: _buscaController,
+                          style: TextStyle(color: corTextoCard),
+                          decoration: InputDecoration(
+                            hintText: 'Digite um endereço ou CEP...',
+                            hintStyle: TextStyle(
+                                color: corTextoCard.withOpacity(0.6)),
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 16),
+                            border: InputBorder.none,
+                            suffixIcon: _buscando
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    ),
+                                  )
+                                : IconButton(
+                                    icon: Icon(Icons.search, color: corTextoCard),
+                                    onPressed: () =>
+                                        _buscarEndereco(_buscaController.text),
+                                  ),
+                          ),
+                          onChanged: _onBuscaChanged,
+                          onSubmitted: _buscarEndereco,
+                        ),
+                      ),
+
+                      // Lista de sugestões (aparece só se houver resultados)
+                      if (_sugestoes.isNotEmpty)
+                        Material(
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(8),
+                          color: corFundoCard,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 220),
+                            child: ListView.builder(
+                              padding: EdgeInsets.zero,
+                              shrinkWrap: true,
+                              itemCount: _sugestoes.length,
+                              itemBuilder: (context, index) {
+                                final item = _sugestoes[index];
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(Icons.place, color: corTextoCard),
+                                  title: Text(
+                                    item['display_name'] ?? '',
+                                    style: TextStyle(color: corTextoCard),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onTap: () => _selecionarSugestao(item),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                // Card com resumo de tempo e distância da rota atual
+                if (_duracaoSegundos != null && _distanciaMetros != null && _sugestoes.isEmpty)
+                  Positioned(
+                    top: 70,
+                    left: 10,
+                    right: 10,
+                    child: Material(
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      color: corFundoCard,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.access_time,
+                                size: 18,
+                                color: _temaNoturno ? Colors.cyanAccent : Colors.blue),
+                            const SizedBox(width: 6),
+                            Text(
+                              _formatarDuracao(_duracaoSegundos!),
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, color: corTextoCard),
+                            ),
+                            const SizedBox(width: 16),
+                            Icon(Icons.route,
+                                size: 18,
+                                color: _temaNoturno ? Colors.cyanAccent : Colors.blue),
+                            const SizedBox(width: 6),
+                            Text(_formatarDistancia(_distanciaMetros!),
+                                style: TextStyle(color: corTextoCard)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Controles de zoom e recentralização
+                Positioned(
+                  left: 10,
+                  bottom: 20,
+                  child: Column(
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'recentrar',
+                        backgroundColor: corFundoCard,
+                        onPressed: _recentrarNaMinhaLocalizacao,
+                        child: Icon(Icons.my_location,
+                            color: _temaNoturno ? Colors.cyanAccent : Colors.blue),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomIn',
+                        backgroundColor: corFundoCard,
+                        onPressed: _aumentarZoom,
+                        child: Icon(Icons.add, color: corTextoCard),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoomOut',
+                        backgroundColor: corFundoCard,
+                        onPressed: _diminuirZoom,
+                        child: Icon(Icons.remove, color: corTextoCard),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
