@@ -36,6 +36,10 @@ class _MapaScreenState extends State<MapaScreen> {
   bool _modoNavegacao = false;
   DateTime? _ultimoRecalculo;
 
+  // Resumo de tempo/distância da rota atual (vindos do OSRM)
+  double? _duracaoSegundos;
+  double? _distanciaMetros;
+
   // Instruções de voz (turn-by-turn)
   final FlutterTts _tts = FlutterTts();
   List<InstrucaoNavegacao> _instrucoes = [];
@@ -218,7 +222,8 @@ class _MapaScreenState extends State<MapaScreen> {
   }
 
   // Traça a rota entre origem e destino usando OSRM, incluindo os "steps"
-  // (manobras) para gerar as instruções de voz turn-by-turn.
+  // (manobras) para gerar as instruções de voz turn-by-turn, além do
+  // tempo e distância estimados da viagem.
   Future<void> _tracarRota(LatLng origem, LatLng destino) async {
     try {
       final url = Uri.parse(
@@ -237,6 +242,9 @@ class _MapaScreenState extends State<MapaScreen> {
       }
 
       final rota = dados['routes'][0];
+
+      final duracao = (rota['duration'] as num).toDouble();
+      final distancia = (rota['distance'] as num).toDouble();
 
       final coordenadas = rota['geometry']['coordinates'] as List;
       final pontos =
@@ -265,6 +273,8 @@ class _MapaScreenState extends State<MapaScreen> {
         _pontosRota = pontos;
         _instrucoes = novasInstrucoes;
         _indiceInstrucaoAtual = 0;
+        _duracaoSegundos = duracao;
+        _distanciaMetros = distancia;
       });
 
       // Só enquadra origem+destino se NÃO estivermos navegando
@@ -335,6 +345,21 @@ class _MapaScreenState extends State<MapaScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(mensagem)),
     );
+  }
+
+  // Formata segundos em texto legível: "12 min" ou "1h 5min"
+  String _formatarDuracao(double segundos) {
+    final minutos = (segundos / 60).round();
+    if (minutos < 60) return '$minutos min';
+    final horas = minutos ~/ 60;
+    final minutosRestantes = minutos % 60;
+    return '${horas}h ${minutosRestantes}min';
+  }
+
+  // Formata metros em texto legível: "5.3 km"
+  String _formatarDistancia(double metros) {
+    final km = metros / 1000;
+    return '${km.toStringAsFixed(1)} km';
   }
 
   // Retorna o ícone correspondente a cada tipo de alerta
@@ -610,6 +635,40 @@ class _MapaScreenState extends State<MapaScreen> {
                   ),
                 ),
               ),
+
+              // Card com resumo de tempo e distância da rota atual
+              if (_duracaoSegundos != null && _distanciaMetros != null)
+                Positioned(
+                  top: 70,
+                  left: 10,
+                  right: 10,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.white,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.access_time,
+                              size: 18, color: Colors.blue),
+                          const SizedBox(width: 6),
+                          Text(
+                            _formatarDuracao(_duracaoSegundos!),
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(width: 16),
+                          const Icon(Icons.route, size: 18, color: Colors.blue),
+                          const SizedBox(width: 6),
+                          Text(_formatarDistancia(_distanciaMetros!)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
 
               // Controles de zoom e recentralização (canto inferior ESQUERDO)
               Positioned(
