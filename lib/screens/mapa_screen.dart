@@ -30,29 +30,21 @@ class _MapaScreenState extends State<MapaScreen> {
   bool _buscando = false;
   final AlertaService _alertaService = AlertaService();
 
-  // Direção atual do usuário (heading do GPS), usada para girar o ícone
   double _direcaoAtual = 0;
 
-  // Controle do modo de navegação em tempo real
   bool _modoNavegacao = false;
   DateTime? _ultimoRecalculo;
 
-  // Resumo de tempo/distância da rota atual (vindos do OSRM)
   double? _duracaoSegundos;
   double? _distanciaMetros;
 
-  // Instruções de voz (turn-by-turn)
   final FlutterTts _tts = FlutterTts();
   List<InstrucaoNavegacao> _instrucoes = [];
   int _indiceInstrucaoAtual = 0;
 
-  // Controle da solicitação manual de permissão de localização (necessário
-  // no iOS/Safari, que só libera geolocalização se disparada por um toque
-  // real do usuário, não automaticamente ao abrir a tela)
   bool _solicitandoLocalizacao = false;
   bool _erroPermissaoLocalizacao = false;
 
-  // --- Autocomplete de endereços ---
   List<Map<String, dynamic>> _sugestoes = [];
   Timer? _debounce;
 
@@ -63,10 +55,6 @@ class _MapaScreenState extends State<MapaScreen> {
   void initState() {
     super.initState();
     _tts.setLanguage('pt-BR');
-    // Não chamamos _iniciarRastreamento() aqui de propósito.
-    // No iOS, pedir geolocalização automaticamente (sem toque do usuário)
-    // faz o navegador bloquear silenciosamente, sem mostrar o popup.
-    // Por isso o usuário precisa tocar em um botão para ativar o GPS.
   }
 
   Future<void> _ativarLocalizacaoManual() async {
@@ -165,8 +153,6 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Dispara a busca de sugestões com debounce (600ms) para não sobrecarregar
-  // o limite de 1 requisição/segundo do Nominatim.
   void _onBuscaChanged(String texto) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
 
@@ -181,7 +167,6 @@ class _MapaScreenState extends State<MapaScreen> {
     });
   }
 
-  // Consulta o Nominatim e retorna até 5 sugestões de endereço
   Future<List<Map<String, dynamic>>> _buscarSugestoes(String texto) async {
     try {
       final url = Uri.parse(
@@ -204,7 +189,6 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
-  // Quando o usuário toca em uma sugestão da lista
   Future<void> _selecionarSugestao(Map<String, dynamic> sugestao) async {
     if (_minhaLocalizacao == null) {
       _mostrarErro('Ative sua localização antes de buscar um destino.');
@@ -226,8 +210,6 @@ class _MapaScreenState extends State<MapaScreen> {
     await _tracarRota(_minhaLocalizacao!, destinoEncontrado);
   }
 
-  // Busca o endereço (ou CEP) e transforma em coordenadas (usado ao apertar
-  // Enter ou o ícone de busca, sem passar pela lista de sugestões)
   Future<void> _buscarEndereco(String textoDigitado) async {
     if (textoDigitado.trim().isEmpty) return;
 
@@ -499,7 +481,6 @@ class _MapaScreenState extends State<MapaScreen> {
     );
   }
 
-  // Alterna entre tema claro e tema noturno (tiles + cores da UI)
   void _alternarTema() {
     setState(() {
       _temaNoturno = !_temaNoturno;
@@ -517,10 +498,10 @@ class _MapaScreenState extends State<MapaScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // URL do tile: OpenStreetMap padrão (dia) ou CartoDB Dark Matter (noite)
-    final tileUrl = _temaNoturno
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    // Sempre usamos o OpenStreetMap padrão — o "modo escuro" é aplicado
+    // visualmente com um filtro de cor, sem depender de nenhum serviço
+    // externo que exija API key.
+    const tileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
     final corFundoCard = _temaNoturno ? const Color(0xFF1E1E1E) : Colors.white;
     final corTextoCard = _temaNoturno ? Colors.white : Colors.black87;
@@ -572,10 +553,25 @@ class _MapaScreenState extends State<MapaScreen> {
                     initialZoom: 13,
                   ),
                   children: [
-                    TileLayer(
-                      urlTemplate: tileUrl,
-                      userAgentPackageName: 'com.emerson.navifake',
-                      subdomains: _temaNoturno ? const ['a', 'b', 'c', 'd'] : const ['a', 'b', 'c'],
+                    // Camada de tiles com inversão de cor no tema noturno.
+                    // ColorFilter.matrix com valores -1 inverte as cores
+                    // (preto vira branco e vice-versa), simulando modo
+                    // escuro sem precisar de outro servidor de mapas.
+                    ColorFiltered(
+                      colorFilter: _temaNoturno
+                          ? const ColorFilter.matrix(<double>[
+                              -1, 0, 0, 0, 255,
+                              0, -1, 0, 0, 255,
+                              0, 0, -1, 0, 255,
+                              0, 0, 0, 1, 0,
+                            ])
+                          : const ColorFilter.mode(
+                              Colors.transparent, BlendMode.multiply),
+                      child: TileLayer(
+                        urlTemplate: tileUrl,
+                        userAgentPackageName: 'com.emerson.navifake',
+                        subdomains: const ['a', 'b', 'c'],
+                      ),
                     ),
                     if (_pontosRota.isNotEmpty)
                       PolylineLayer(
@@ -711,7 +707,6 @@ class _MapaScreenState extends State<MapaScreen> {
                         ),
                       ),
 
-                      // Lista de sugestões (aparece só se houver resultados)
                       if (_sugestoes.isNotEmpty)
                         Material(
                           elevation: 4,
@@ -744,7 +739,6 @@ class _MapaScreenState extends State<MapaScreen> {
                   ),
                 ),
 
-                // Card com resumo de tempo e distância da rota atual
                 if (_duracaoSegundos != null && _distanciaMetros != null && _sugestoes.isEmpty)
                   Positioned(
                     top: 70,
@@ -782,7 +776,6 @@ class _MapaScreenState extends State<MapaScreen> {
                     ),
                   ),
 
-                // Controles de zoom e recentralização
                 Positioned(
                   left: 10,
                   bottom: 20,
