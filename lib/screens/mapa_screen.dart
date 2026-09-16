@@ -41,21 +41,58 @@ class _MapaScreenState extends State<MapaScreen> {
   List<InstrucaoNavegacao> _instrucoes = [];
   int _indiceInstrucaoAtual = 0;
 
+  // Controle da solicitação manual de permissão de localização (necessário
+  // no iOS/Safari, que só libera geolocalização se disparada por um toque
+  // real do usuário, não automaticamente ao abrir a tela)
+  bool _solicitandoLocalizacao = false;
+  bool _erroPermissaoLocalizacao = false;
+
   @override
   void initState() {
     super.initState();
-    _iniciarRastreamento();
     _tts.setLanguage('pt-BR');
+    // Não chamamos _iniciarRastreamento() aqui de propósito.
+    // No iOS, pedir geolocalização automaticamente (sem toque do usuário)
+    // faz o navegador bloquear silenciosamente, sem mostrar o popup.
+    // Por isso o usuário precisa tocar em um botão para ativar o GPS.
+  }
+
+  Future<void> _ativarLocalizacaoManual() async {
+    setState(() {
+      _solicitandoLocalizacao = true;
+      _erroPermissaoLocalizacao = false;
+    });
+
+    await _iniciarRastreamento();
+
+    setState(() {
+      _solicitandoLocalizacao = false;
+    });
   }
 
   Future<void> _iniciarRastreamento() async {
     bool servicoAtivo = await Geolocator.isLocationServiceEnabled();
-    if (!servicoAtivo) return;
+    if (!servicoAtivo) {
+      setState(() => _erroPermissaoLocalizacao = true);
+      _mostrarErro('Ative o serviço de localização do dispositivo.');
+      return;
+    }
 
     LocationPermission permissao = await Geolocator.checkPermission();
     if (permissao == LocationPermission.denied) {
       permissao = await Geolocator.requestPermission();
-      if (permissao == LocationPermission.denied) return;
+      if (permissao == LocationPermission.denied) {
+        setState(() => _erroPermissaoLocalizacao = true);
+        _mostrarErro('Permissão de localização negada.');
+        return;
+      }
+    }
+
+    if (permissao == LocationPermission.deniedForever) {
+      setState(() => _erroPermissaoLocalizacao = true);
+      _mostrarErro(
+          'Permissão de localização bloqueada. Ative nas configurações do navegador.');
+      return;
     }
 
     const configuracao = LocationSettings(
@@ -123,7 +160,12 @@ class _MapaScreenState extends State<MapaScreen> {
 
   // Busca o endereço (ou CEP) e transforma em coordenadas
   Future<void> _buscarEndereco(String textoDigitado) async {
-    if (textoDigitado.trim().isEmpty || _minhaLocalizacao == null) return;
+    if (textoDigitado.trim().isEmpty) return;
+
+    if (_minhaLocalizacao == null) {
+      _mostrarErro('Ative sua localização antes de buscar um destino.');
+      return;
+    }
 
     setState(() => _buscando = true);
 
@@ -488,6 +530,51 @@ class _MapaScreenState extends State<MapaScreen> {
                   ),
                 ],
               ),
+
+              // Overlay: botão para ativar localização manualmente
+              // (necessário para funcionar no Safari/Chrome iOS, que só
+              // libera geolocalização a partir de um toque real do usuário)
+              if (_minhaLocalizacao == null)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black45,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_erroPermissaoLocalizacao)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 12),
+                              child: Text(
+                                'Não foi possível obter sua localização.\nVerifique as permissões do navegador.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ElevatedButton.icon(
+                            onPressed: _solicitandoLocalizacao
+                                ? null
+                                : _ativarLocalizacaoManual,
+                            icon: _solicitandoLocalizacao
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.my_location),
+                            label: Text(
+                              _solicitandoLocalizacao
+                                  ? 'Buscando localização...'
+                                  : 'Ativar minha localização',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
               // Barra de busca de endereço/CEP
               Positioned(
                 top: 10,
@@ -523,36 +610,36 @@ class _MapaScreenState extends State<MapaScreen> {
                   ),
                 ),
               ),
-              // Controles de zoom e recentralização (canto inferior ESQUERDO)
-Positioned(
-  left: 10,
-  bottom: 20,
-  child: Column(
-    children: [
-      FloatingActionButton.small(
-        heroTag: 'recentrar',
-        backgroundColor: Colors.white,
-        onPressed: _recentrarNaMinhaLocalizacao,
-        child: const Icon(Icons.my_location, color: Colors.blue),
-      ),
-      const SizedBox(height: 8),
-      FloatingActionButton.small(
-        heroTag: 'zoomIn',
-        backgroundColor: Colors.white,
-        onPressed: _aumentarZoom,
-        child: const Icon(Icons.add, color: Colors.black87),
-      ),
-      const SizedBox(height: 8),
-      FloatingActionButton.small(
-        heroTag: 'zoomOut',
-        backgroundColor: Colors.white,
-        onPressed: _diminuirZoom,
-        child: const Icon(Icons.remove, color: Colors.black87),
-      ),
-    ],
-  ),
-),
 
+              // Controles de zoom e recentralização (canto inferior ESQUERDO)
+              Positioned(
+                left: 10,
+                bottom: 20,
+                child: Column(
+                  children: [
+                    FloatingActionButton.small(
+                      heroTag: 'recentrar',
+                      backgroundColor: Colors.white,
+                      onPressed: _recentrarNaMinhaLocalizacao,
+                      child: const Icon(Icons.my_location, color: Colors.blue),
+                    ),
+                    const SizedBox(height: 8),
+                    FloatingActionButton.small(
+                      heroTag: 'zoomIn',
+                      backgroundColor: Colors.white,
+                      onPressed: _aumentarZoom,
+                      child: const Icon(Icons.add, color: Colors.black87),
+                    ),
+                    const SizedBox(height: 8),
+                    FloatingActionButton.small(
+                      heroTag: 'zoomOut',
+                      backgroundColor: Colors.white,
+                      onPressed: _diminuirZoom,
+                      child: const Icon(Icons.remove, color: Colors.black87),
+                    ),
+                  ],
+                ),
+              ),
             ],
           );
         },
