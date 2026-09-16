@@ -1,4 +1,4 @@
-//lib/screens/mapa_screen.dart
+// lib/screens/mapa_screen.dart
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -51,10 +51,22 @@ class _MapaScreenState extends State<MapaScreen> {
   // --- Tema noturno ---
   bool _temaNoturno = false;
 
+  // --- Proximidade de alertas ---
+  List<Alerta> _alertasAtuais = [];
+  final Set<String> _alertasJaAvisados = {};
+  StreamSubscription<List<Alerta>>? _streamAlertas;
+  static const double _raioAvisoMetros = 300;
+
   @override
   void initState() {
     super.initState();
     _tts.setLanguage('pt-BR');
+
+    // Mantém a lista de alertas atualizada para uso fora do StreamBuilder,
+    // permitindo verificar proximidade a cada atualização de GPS.
+    _streamAlertas = _alertaService.escutarAlertas().listen((alertas) {
+      _alertasAtuais = alertas;
+    });
   }
 
   Future<void> _ativarLocalizacaoManual() async {
@@ -112,6 +124,9 @@ class _MapaScreenState extends State<MapaScreen> {
         }
       });
 
+      // Verifica se algum alerta reportado está próximo do usuário.
+      _verificarProximidadeAlertas(novaPosicao);
+
       if (_primeiraLocalizacao) {
         _mapController.move(novaPosicao, 15);
         _primeiraLocalizacao = false;
@@ -123,6 +138,29 @@ class _MapaScreenState extends State<MapaScreen> {
         _verificarProximaInstrucao(novaPosicao);
       }
     });
+  }
+
+  // Compara a posição atual com cada alerta ativo e avisa (voz + snackbar)
+  // quando o usuário entra no raio de aviso. Cada alerta só avisa uma vez
+  // por sessão, controlado por _alertasJaAvisados.
+  void _verificarProximidadeAlertas(LatLng posicaoAtual) {
+    const distancia = Distance();
+
+    for (final alerta in _alertasAtuais) {
+      if (alerta.id == null || _alertasJaAvisados.contains(alerta.id)) {
+        continue;
+      }
+
+      final pontoAlerta = LatLng(alerta.latitude, alerta.longitude);
+      final d = distancia(posicaoAtual, pontoAlerta);
+
+      if (d <= _raioAvisoMetros) {
+        _alertasJaAvisados.add(alerta.id!);
+        final nomeAlerta = tiposDeAlerta[alerta.tipo] ?? 'Alerta';
+        _tts.speak('Atenção, $nomeAlerta próximo');
+        _mostrarErro('$nomeAlerta a ${d.round()} metros');
+      }
+    }
   }
 
   bool _pareceCep(String texto) {
@@ -323,6 +361,10 @@ class _MapaScreenState extends State<MapaScreen> {
         _distanciaMetros = distancia;
       });
 
+      // Nova rota: reseta os avisos de proximidade para que os alertas
+      // no novo trajeto possam ser avisados novamente.
+      _alertasJaAvisados.clear();
+
       if (!_modoNavegacao) {
         _mapController.fitCamera(
           CameraFit.coordinates(
@@ -490,6 +532,7 @@ class _MapaScreenState extends State<MapaScreen> {
   @override
   void dispose() {
     _streamPosicao?.cancel();
+    _streamAlertas?.cancel();
     _buscaController.dispose();
     _debounce?.cancel();
     _tts.stop();
