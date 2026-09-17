@@ -21,7 +21,7 @@ class NaviFakeApp extends StatelessWidget {
     return MaterialApp(
       title: 'NaviFake',
       home: const MenuTesteScreen(),
-      # home: const MapaScreen(),
+     // home: const MapaScreen(),
     );
   }
 }
