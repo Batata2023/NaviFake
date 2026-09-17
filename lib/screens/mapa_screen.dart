@@ -58,6 +58,13 @@ class _MapaScreenState extends State<MapaScreen> {
   StreamSubscription<List<Alerta>>? _streamAlertas;
   static const double _raioAvisoMetros = 300;
 
+  // --- Velocidade atual vs. limite da via ---
+  double _velocidadeAtualKmh = 0;
+  List<double?> _limitesVelocidade = [];
+
+  // Zoom fixo usado durante o modo navegação (mais próximo, estilo Waze).
+  static const double _zoomNavegacao = 18;
+
   @override
   void initState() {
     super.initState();
@@ -123,6 +130,8 @@ class _MapaScreenState extends State<MapaScreen> {
         if (posicao.heading >= 0) {
           _direcaoAtual = posicao.heading;
         }
+        // posicao.speed vem em metros/segundo; convertendo para km/h.
+        _velocidadeAtualKmh = posicao.speed * 3.6;
       });
 
       // Verifica se algum alerta reportado está próximo do usuário.
@@ -135,10 +144,10 @@ class _MapaScreenState extends State<MapaScreen> {
 
       if (_modoNavegacao) {
         // moveAndRotate gira o mapa para acompanhar a direção do usuário
-        // (modo "heading-up"), assim a rota sempre aparece "para frente".
+        // (modo "heading-up") e mantém o zoom fixo e próximo, como no Waze.
         _mapController.moveAndRotate(
           novaPosicao,
-          _mapController.camera.zoom,
+          _zoomNavegacao,
           -_direcaoAtual,
         );
         _verificarDesvioDaRota(novaPosicao);
@@ -322,7 +331,7 @@ class _MapaScreenState extends State<MapaScreen> {
         'https://router.project-osrm.org/route/v1/driving/'
         '${origem.longitude},${origem.latitude};'
         '${destino.longitude},${destino.latitude}'
-        '?overview=full&geometries=geojson&steps=true',
+        '?overview=full&geometries=geojson&steps=true&annotations=maxspeed',
       );
 
       final resposta = await http.get(url);
@@ -343,6 +352,8 @@ class _MapaScreenState extends State<MapaScreen> {
           coordenadas.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
 
       final List<InstrucaoNavegacao> novasInstrucoes = [];
+      final List<double?> limites = [];
+
       for (final leg in rota['legs']) {
         for (final step in leg['steps']) {
           final maneuver = step['maneuver'];
@@ -358,6 +369,16 @@ class _MapaScreenState extends State<MapaScreen> {
             ),
           );
         }
+
+        // Limite de velocidade por segmento (depende dos dados do
+        // OpenStreetMap na região; pode vir nulo em vias sem essa tag).
+        final maxspeeds = leg['annotation']?['maxspeed'] as List?;
+        if (maxspeeds != null) {
+          for (final item in maxspeeds) {
+            final speed = item['speed'];
+            limites.add(speed != null ? (speed as num).toDouble() : null);
+          }
+        }
       }
 
       setState(() {
@@ -366,6 +387,7 @@ class _MapaScreenState extends State<MapaScreen> {
         _indiceInstrucaoAtual = 0;
         _duracaoSegundos = duracao;
         _distanciaMetros = distancia;
+        _limitesVelocidade = limites;
       });
 
       // Nova rota: reseta os avisos de proximidade para que os alertas
@@ -446,6 +468,16 @@ class _MapaScreenState extends State<MapaScreen> {
     return '${km.toStringAsFixed(1)} km';
   }
 
+  // Limite de velocidade referente ao trecho atual da rota (o primeiro
+  // valor não nulo disponível). Retorna null se a via não tiver essa
+  // informação no OpenStreetMap.
+  double? get _limiteAtual {
+    for (final limite in _limitesVelocidade) {
+      if (limite != null) return limite;
+    }
+    return null;
+  }
+
   IconData _iconePorTipo(String tipo) {
     switch (tipo) {
       case 'radar_fixo':
@@ -506,9 +538,10 @@ class _MapaScreenState extends State<MapaScreen> {
     });
 
     if (_modoNavegacao && _minhaLocalizacao != null) {
-      // Ativa modo heading-up (mapa girado conforme direção) e mantém
-      // a tela acesa enquanto o usuário está navegando.
-      _mapController.moveAndRotate(_minhaLocalizacao!, 17, -_direcaoAtual);
+      // Ativa modo heading-up com zoom próximo e mantém a tela acesa
+      // enquanto o usuário está navegando.
+      _mapController.moveAndRotate(
+          _minhaLocalizacao!, _zoomNavegacao, -_direcaoAtual);
       WakelockPlus.enable();
     } else {
       // Volta o mapa para o norte e libera a economia de energia da tela.
@@ -563,6 +596,10 @@ class _MapaScreenState extends State<MapaScreen> {
 
     final corFundoCard = _temaNoturno ? const Color(0xFF1E1E1E) : Colors.white;
     final corTextoCard = _temaNoturno ? Colors.white : Colors.black87;
+
+    final limiteAtual = _limiteAtual;
+    final acimaDoLimite =
+        limiteAtual != null && _velocidadeAtualKmh > limiteAtual;
 
     return Theme(
       data: _temaNoturno ? ThemeData.dark() : ThemeData.light(),
@@ -831,6 +868,76 @@ class _MapaScreenState extends State<MapaScreen> {
                           ],
                         ),
                       ),
+                    ),
+                  ),
+
+                // Painel de velocidade atual vs. limite da via — só
+                // aparece durante a navegação ativa.
+                if (_modoNavegacao)
+                  Positioned(
+                    bottom: 100,
+                    right: 10,
+                    child: Row(
+                      children: [
+                        // Velocidade atual (sempre disponível via GPS)
+                        Material(
+                          elevation: 4,
+                          shape: const CircleBorder(),
+                          color: acimaDoLimite ? Colors.red : corFundoCard,
+                          child: Container(
+                            width: 64,
+                            height: 64,
+                            alignment: Alignment.center,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  _velocidadeAtualKmh.round().toString(),
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: acimaDoLimite
+                                        ? Colors.white
+                                        : corTextoCard,
+                                  ),
+                                ),
+                                Text(
+                                  'km/h',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: acimaDoLimite
+                                        ? Colors.white
+                                        : corTextoCard,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Limite da via (só aparece se o OSM tiver o dado)
+                        if (limiteAtual != null) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            width: 54,
+                            height: 54,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.white,
+                              border: Border.all(color: Colors.red, width: 4),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              limiteAtual.round().toString(),
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
 
