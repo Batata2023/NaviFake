@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/alerta.dart';
 import '../services/alerta_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -133,7 +134,13 @@ class _MapaScreenState extends State<MapaScreen> {
       }
 
       if (_modoNavegacao) {
-        _mapController.move(novaPosicao, _mapController.camera.zoom);
+        // moveAndRotate gira o mapa para acompanhar a direção do usuário
+        // (modo "heading-up"), assim a rota sempre aparece "para frente".
+        _mapController.moveAndRotate(
+          novaPosicao,
+          _mapController.camera.zoom,
+          -_direcaoAtual,
+        );
         _verificarDesvioDaRota(novaPosicao);
         _verificarProximaInstrucao(novaPosicao);
       }
@@ -499,7 +506,14 @@ class _MapaScreenState extends State<MapaScreen> {
     });
 
     if (_modoNavegacao && _minhaLocalizacao != null) {
-      _mapController.move(_minhaLocalizacao!, 17);
+      // Ativa modo heading-up (mapa girado conforme direção) e mantém
+      // a tela acesa enquanto o usuário está navegando.
+      _mapController.moveAndRotate(_minhaLocalizacao!, 17, -_direcaoAtual);
+      WakelockPlus.enable();
+    } else {
+      // Volta o mapa para o norte e libera a economia de energia da tela.
+      _mapController.rotate(0);
+      WakelockPlus.disable();
     }
   }
 
@@ -531,6 +545,7 @@ class _MapaScreenState extends State<MapaScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _streamPosicao?.cancel();
     _streamAlertas?.cancel();
     _buscaController.dispose();
