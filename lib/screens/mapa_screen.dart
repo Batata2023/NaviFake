@@ -1,6 +1,7 @@
 // lib/screens/mapa_screen.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -605,6 +606,78 @@ class _MapaScreenState extends State<MapaScreen> {
     final corFundoCard = _temaNoturno ? const Color(0xFF1E1E1E) : Colors.white;
     final corTextoCard = _temaNoturno ? Colors.white : Colors.black87;
 
+    final mapaWidget = FlutterMap(
+      mapController: _mapController,
+      options: const MapOptions(
+        initialCenter: LatLng(-23.5505, -46.6333),
+        initialZoom: 13,
+      ),
+      children: [
+        // Camada de tiles com inversão de cor no tema noturno.
+        // ColorFilter.matrix com valores -1 inverte as cores
+        // (preto vira branco e vice-versa), simulando modo
+        // escuro sem precisar de outro servidor de mapas.
+        ColorFiltered(
+          colorFilter: _temaNoturno
+              ? const ColorFilter.matrix(<double>[
+                  -1, 0, 0, 0, 255,
+                  0, -1, 0, 0, 255,
+                  0, 0, -1, 0, 255,
+                  0, 0, 0, 1, 0,
+                ])
+              : const ColorFilter.mode(
+                  Colors.transparent, BlendMode.multiply),
+          child: TileLayer(
+            urlTemplate: tileUrl,
+            userAgentPackageName: 'com.emerson.navifake',
+            subdomains: const ['a', 'b', 'c'],
+          ),
+        ),
+        if (_pontosRota.isNotEmpty)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _pontosRota,
+                color: _temaNoturno ? Colors.cyanAccent : Colors.blueAccent,
+                strokeWidth: 5,
+              ),
+            ],
+          ),
+        MarkerLayer(
+          markers: [
+            if (_minhaLocalizacao != null)
+              Marker(
+                point: _minhaLocalizacao!,
+                width: 40,
+                height: 40,
+                child: Transform.rotate(
+                  angle: _direcaoAtual * (math.pi / 180),
+                  child: Icon(
+                    Icons.directions_car,
+                    color: _temaNoturno ? Colors.cyanAccent : Colors.blue,
+                    size: 32,
+                  ),
+                ),
+              ),
+            if (_destino != null)
+              Marker(
+                point: _destino!,
+                width: 40,
+                height: 40,
+                child: const Icon(Icons.location_on,
+                    color: Colors.red, size: 40),
+              ),
+            ...StreamBuilder<List<Alerta>>(
+                    stream: null, // placeholder substituído abaixo
+                    builder: (context, snapshot) => const SizedBox.shrink())
+                as dynamic == null
+                ? []
+                : [],
+          ],
+        ),
+      ],
+    );
+
     return Theme(
       data: _temaNoturno ? ThemeData.dark() : ThemeData.light(),
       child: Scaffold(
@@ -645,82 +718,94 @@ class _MapaScreenState extends State<MapaScreen> {
 
             return Stack(
               children: [
-                FlutterMap(
-                  mapController: _mapController,
-                  options: const MapOptions(
-                    initialCenter: LatLng(-23.5505, -46.6333),
-                    initialZoom: 13,
-                  ),
-                  children: [
-                    // Camada de tiles com inversão de cor no tema noturno.
-                    // ColorFilter.matrix com valores -1 inverte as cores
-                    // (preto vira branco e vice-versa), simulando modo
-                    // escuro sem precisar de outro servidor de mapas.
-                    ColorFiltered(
-                      colorFilter: _temaNoturno
-                          ? const ColorFilter.matrix(<double>[
-                              -1, 0, 0, 0, 255,
-                              0, -1, 0, 0, 255,
-                              0, 0, -1, 0, 255,
-                              0, 0, 0, 1, 0,
-                            ])
-                          : const ColorFilter.mode(
-                              Colors.transparent, BlendMode.multiply),
-                      child: TileLayer(
-                        urlTemplate: tileUrl,
-                        userAgentPackageName: 'com.emerson.navifake',
-                        subdomains: const ['a', 'b', 'c'],
-                      ),
+                // Efeito de perspectiva falso (3D): só inclina o mapa
+                // durante o modo navegação, como no Waze. Fora da
+                // navegação o mapa fica plano, mais fácil de ler.
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 400),
+                  transformAlignment: Alignment.center,
+                  transform: _modoNavegacao
+                      ? (Matrix4.identity()
+                        ..setEntry(3, 2, 0.0012)
+                        ..rotateX(0.55))
+                      : Matrix4.identity(),
+                  child: FlutterMap(
+                    mapController: _mapController,
+                    options: const MapOptions(
+                      initialCenter: LatLng(-23.5505, -46.6333),
+                      initialZoom: 13,
                     ),
-                    if (_pontosRota.isNotEmpty)
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: _pontosRota,
-                            color: _temaNoturno ? Colors.cyanAccent : Colors.blueAccent,
-                            strokeWidth: 5,
-                          ),
-                        ],
+                    children: [
+                      ColorFiltered(
+                        colorFilter: _temaNoturno
+                            ? const ColorFilter.matrix(<double>[
+                                -1, 0, 0, 0, 255,
+                                0, -1, 0, 0, 255,
+                                0, 0, -1, 0, 255,
+                                0, 0, 0, 1, 0,
+                              ])
+                            : const ColorFilter.mode(
+                                Colors.transparent, BlendMode.multiply),
+                        child: TileLayer(
+                          urlTemplate: tileUrl,
+                          userAgentPackageName: 'com.emerson.navifake',
+                          subdomains: const ['a', 'b', 'c'],
+                        ),
                       ),
-                    MarkerLayer(
-                      markers: [
-                        if (_minhaLocalizacao != null)
-                          Marker(
-                            point: _minhaLocalizacao!,
-                            width: 40,
-                            height: 40,
-                            child: Transform.rotate(
-                              angle: _direcaoAtual * (3.1415926535 / 180),
-                              child: Icon(
-                                Icons.directions_car,
-                                color: _temaNoturno ? Colors.cyanAccent : Colors.blue,
-                                size: 32,
+                      if (_pontosRota.isNotEmpty)
+                        PolylineLayer(
+                          polylines: [
+                            Polyline(
+                              points: _pontosRota,
+                              color: _temaNoturno
+                                  ? Colors.cyanAccent
+                                  : Colors.blueAccent,
+                              strokeWidth: 5,
+                            ),
+                          ],
+                        ),
+                      MarkerLayer(
+                        markers: [
+                          if (_minhaLocalizacao != null)
+                            Marker(
+                              point: _minhaLocalizacao!,
+                              width: 40,
+                              height: 40,
+                              child: Transform.rotate(
+                                angle: _direcaoAtual * (math.pi / 180),
+                                child: Icon(
+                                  Icons.directions_car,
+                                  color: _temaNoturno
+                                      ? Colors.cyanAccent
+                                      : Colors.blue,
+                                  size: 32,
+                                ),
                               ),
                             ),
-                          ),
-                        if (_destino != null)
-                          Marker(
-                            point: _destino!,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(Icons.location_on,
-                                color: Colors.red, size: 40),
-                          ),
-                        ...alertas.map((alerta) {
-                          return Marker(
-                            point: LatLng(alerta.latitude, alerta.longitude),
-                            width: 36,
-                            height: 36,
-                            child: Icon(
-                              _iconePorTipo(alerta.tipo),
-                              color: Colors.deepOrange,
-                              size: 30,
+                          if (_destino != null)
+                            Marker(
+                              point: _destino!,
+                              width: 40,
+                              height: 40,
+                              child: const Icon(Icons.location_on,
+                                  color: Colors.red, size: 40),
                             ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ],
+                          ...alertas.map((alerta) {
+                            return Marker(
+                              point: LatLng(alerta.latitude, alerta.longitude),
+                              width: 36,
+                              height: 36,
+                              child: Icon(
+                                _iconePorTipo(alerta.tipo),
+                                color: Colors.deepOrange,
+                                size: 30,
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
 
                 if (_minhaLocalizacao == null)
