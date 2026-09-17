@@ -688,7 +688,7 @@ class _MapaScreenState extends State<MapaScreen> {
                             child: Transform.rotate(
                               angle: _direcaoAtual * (3.1415926535 / 180),
                               child: Icon(
-                                Icons.navigation,
+                                Icons.directions_car,
                                 color: _temaNoturno ? Colors.cyanAccent : Colors.blue,
                                 size: 32,
                               ),
@@ -875,7 +875,7 @@ class _MapaScreenState extends State<MapaScreen> {
                 // aparece durante a navegação ativa.
                 if (_modoNavegacao)
                   Positioned(
-                    bottom: 100,
+                    bottom: 220,
                     right: 10,
                     child: Row(
                       children: [
