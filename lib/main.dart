@@ -20,7 +20,8 @@ class NaviFakeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'NaviFake',
-      home: const MapaScreen(),
+      home: const MenuTesteScreen(),
+      # home: const MapaScreen(),
     );
   }
 }
