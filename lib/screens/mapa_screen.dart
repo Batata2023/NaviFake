@@ -58,9 +58,12 @@ class _MapaScreenState extends State<MapaScreen> {
   StreamSubscription<List<Alerta>>? _streamAlertas;
   static const double _raioAvisoMetros = 300;
 
-  // --- Velocidade atual vs. limite da via ---
+  // --- Velocidade atual (via GPS) ---
+  // OBS: o limite de velocidade da via NÃO é fornecido pelo OSRM público.
+  // Esse dado exigiria uma consulta separada à Overpass API (OpenStreetMap),
+  // o que ainda não foi implementado. Por isso mantemos só a velocidade
+  // atual do usuário no painel.
   double _velocidadeAtualKmh = 0;
-  List<double?> _limitesVelocidade = [];
 
   // Zoom fixo usado durante o modo navegação (mais próximo, estilo Waze).
   static const double _zoomNavegacao = 18;
@@ -352,11 +355,13 @@ class _MapaScreenState extends State<MapaScreen> {
 
   Future<void> _tracarRota(LatLng origem, LatLng destino) async {
     try {
+      // OBS: removido "annotations=maxspeed" — não é um valor válido para
+      // o parâmetro "annotations" do OSRM e causava erro 400.
       final url = Uri.parse(
         'https://router.project-osrm.org/route/v1/driving/'
         '${origem.longitude},${origem.latitude};'
         '${destino.longitude},${destino.latitude}'
-        '?overview=full&geometries=geojson&steps=true&annotations=maxspeed',
+        '?overview=full&geometries=geojson&steps=true',
       );
 
       final resposta = await http.get(url);
@@ -377,7 +382,6 @@ class _MapaScreenState extends State<MapaScreen> {
           coordenadas.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
 
       final List<InstrucaoNavegacao> novasInstrucoes = [];
-      final List<double?> limites = [];
 
       for (final leg in rota['legs']) {
         for (final step in leg['steps']) {
@@ -394,16 +398,6 @@ class _MapaScreenState extends State<MapaScreen> {
             ),
           );
         }
-
-        // Limite de velocidade por segmento (depende dos dados do
-        // OpenStreetMap na região; pode vir nulo em vias sem essa tag).
-        final maxspeeds = leg['annotation']?['maxspeed'] as List?;
-        if (maxspeeds != null) {
-          for (final item in maxspeeds) {
-            final speed = item['speed'];
-            limites.add(speed != null ? (speed as num).toDouble() : null);
-          }
-        }
       }
 
       setState(() {
@@ -412,7 +406,6 @@ class _MapaScreenState extends State<MapaScreen> {
         _indiceInstrucaoAtual = 0;
         _duracaoSegundos = duracao;
         _distanciaMetros = distancia;
-        _limitesVelocidade = limites;
       });
 
       // Nova rota: reseta os avisos de proximidade para que os alertas
@@ -491,16 +484,6 @@ class _MapaScreenState extends State<MapaScreen> {
   String _formatarDistancia(double metros) {
     final km = metros / 1000;
     return '${km.toStringAsFixed(1)} km';
-  }
-
-  // Limite de velocidade referente ao trecho atual da rota (o primeiro
-  // valor não nulo disponível). Retorna null se a via não tiver essa
-  // informação no OpenStreetMap.
-  double? get _limiteAtual {
-    for (final limite in _limitesVelocidade) {
-      if (limite != null) return limite;
-    }
-    return null;
   }
 
   IconData _iconePorTipo(String tipo) {
@@ -621,10 +604,6 @@ class _MapaScreenState extends State<MapaScreen> {
 
     final corFundoCard = _temaNoturno ? const Color(0xFF1E1E1E) : Colors.white;
     final corTextoCard = _temaNoturno ? Colors.white : Colors.black87;
-
-    final limiteAtual = _limiteAtual;
-    final acimaDoLimite =
-        limiteAtual != null && _velocidadeAtualKmh > limiteAtual;
 
     return Theme(
       data: _temaNoturno ? ThemeData.dark() : ThemeData.light(),
@@ -896,73 +875,42 @@ class _MapaScreenState extends State<MapaScreen> {
                     ),
                   ),
 
-                // Painel de velocidade atual vs. limite da via — só
-                // aparece durante a navegação ativa.
+                // Painel de velocidade atual — só aparece durante a
+                // navegação ativa. O limite de velocidade da via foi
+                // removido por enquanto (não disponível no OSRM público).
                 if (_modoNavegacao)
                   Positioned(
                     bottom: 220,
                     right: 10,
-                    child: Row(
-                      children: [
-                        // Velocidade atual (sempre disponível via GPS)
-                        Material(
-                          elevation: 4,
-                          shape: const CircleBorder(),
-                          color: acimaDoLimite ? Colors.red : corFundoCard,
-                          child: Container(
-                            width: 64,
-                            height: 64,
-                            alignment: Alignment.center,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  _velocidadeAtualKmh.round().toString(),
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                    color: acimaDoLimite
-                                        ? Colors.white
-                                        : corTextoCard,
-                                  ),
-                                ),
-                                Text(
-                                  'km/h',
-                                  style: TextStyle(
-                                    fontSize: 9,
-                                    color: acimaDoLimite
-                                        ? Colors.white
-                                        : corTextoCard,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-
-                        // Limite da via (só aparece se o OSM tiver o dado)
-                        if (limiteAtual != null) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            width: 54,
-                            height: 54,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.white,
-                              border: Border.all(color: Colors.red, width: 4),
-                            ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              limiteAtual.round().toString(),
-                              style: const TextStyle(
+                    child: Material(
+                      elevation: 4,
+                      shape: const CircleBorder(),
+                      color: corFundoCard,
+                      child: Container(
+                        width: 64,
+                        height: 64,
+                        alignment: Alignment.center,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              _velocidadeAtualKmh.round().toString(),
+                              style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                color: Colors.black,
+                                color: corTextoCard,
                               ),
                             ),
-                          ),
-                        ],
-                      ],
+                            Text(
+                              'km/h',
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: corTextoCard,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
 
