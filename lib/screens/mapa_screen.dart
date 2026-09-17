@@ -207,6 +207,17 @@ class _MapaScreenState extends State<MapaScreen> {
     }
   }
 
+  // Monta uma "caixa" (viewbox) de aproximadamente 50km ao redor da
+  // localização atual do usuário, usada para priorizar resultados de
+  // busca que estejam perto dele (ex.: rua de Guarulhos, não do Rio).
+  String? _viewboxAtual() {
+    if (_minhaLocalizacao == null) return null;
+    const delta = 0.5; // graus (~50km)
+    final lat = _minhaLocalizacao!.latitude;
+    final lon = _minhaLocalizacao!.longitude;
+    return '${lon - delta},${lat + delta},${lon + delta},${lat - delta}';
+  }
+
   void _onBuscaChanged(String texto) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
 
@@ -223,9 +234,16 @@ class _MapaScreenState extends State<MapaScreen> {
 
   Future<List<Map<String, dynamic>>> _buscarSugestoes(String texto) async {
     try {
+      final viewbox = _viewboxAtual();
+
       final url = Uri.parse(
         'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(texto)}&format=json&addressdetails=1&limit=5',
+        '?q=${Uri.encodeComponent(texto)}'
+        '&format=json'
+        '&addressdetails=1'
+        '&countrycodes=br'
+        '&limit=5'
+        '${viewbox != null ? '&viewbox=$viewbox&bounded=1' : ''}',
       );
 
       final resposta = await http.get(
@@ -292,8 +310,15 @@ class _MapaScreenState extends State<MapaScreen> {
     }
 
     try {
+      final viewbox = _viewboxAtual();
+
       final url = Uri.parse(
-        'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(enderecoParaBuscar)}&format=json&limit=1',
+        'https://nominatim.openstreetmap.org/search'
+        '?q=${Uri.encodeComponent(enderecoParaBuscar)}'
+        '&format=json'
+        '&countrycodes=br'
+        '&limit=1'
+        '${viewbox != null ? '&viewbox=$viewbox&bounded=1' : ''}',
       );
 
       final resposta = await http.get(
